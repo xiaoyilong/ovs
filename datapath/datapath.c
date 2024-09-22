@@ -230,6 +230,48 @@ void ovs_dp_detach_port(struct vport *p)
 	ovs_vport_del(p);
 }
 
+int is_icmp_skb(struct sk_buff *skb){
+	struct iphdr *ip_header = NULL;
+	// 检查 skb 是否为空
+    if (!skb) {
+        //printk(KERN_ERR "[is_icmp_skb] Received null skb\n");
+        return 0;
+    }
+
+    if (skb->protocol == htons(ETH_P_ARP)) {
+		//printk(KERN_ERR "[is_icmp_skb] ARP packet received\n");
+		//return 1;
+	}
+
+    // 检查协议类型是否为 IP
+    if (skb->protocol != htons(ETH_P_IP)) {
+        //printk(KERN_ERR "[is_icmp_skb] Non-IP packet received\n");
+        //kfree_skb(skb);
+        return 0;
+    }
+
+	//printk(KERN_INFO "[is_icmp_skb] IP packet received\n");
+
+    // 检查 IP 头部是否完整
+    if (!pskb_may_pull(skb, sizeof(struct iphdr))) {
+        //printk(KERN_ERR "[is_icmp_skb] Incomplete IP header\n");
+        //kfree_skb(skb);
+        return 0;
+    }
+
+    ip_header = ip_hdr(skb);
+
+    // 检查 IP 协议是否为 ICMP
+    if (ip_header->protocol != IPPROTO_ICMP) {
+		return 0;
+	} else {
+        printk(KERN_INFO "[is_icmp_skb] ICMP packet received: src=%pI4, dst=%pI4\n",
+               &ip_header->saddr, &ip_header->daddr);
+    }
+	return 1;
+}
+
+
 /* Must be called with rcu_read_lock. */
 void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key)
 {
@@ -239,17 +281,26 @@ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key)
 	struct sw_flow_actions *sf_acts;
 	struct dp_stats_percpu *stats;
 	u64 *stats_counter;
-	u32 n_mask_hit;
+	u32 n_mask_hit = 0;
 	int error;
 
 	stats = this_cpu_ptr(dp->stats_percpu);
 
+	if (is_icmp_skb(skb) == 0){
+		//printk(KERN_INFO "XXXX not icmp users is %d ", skb->users);
+		consume_skb(skb);
+		return;
+	}
+
 	/* Look up flow. */
+	/*
 	flow = ovs_flow_tbl_lookup_stats(&dp->table, key, skb_get_hash(skb),
 					 &n_mask_hit);
+	*/
+	flow = NULL;
 	if (unlikely(!flow)) {
 		struct dp_upcall_info upcall;
-
+		printk(KERN_INFO "XXXXXX no hit src=%pI4, dst=%pI4\n", &(key->ipv4.addr.src), &(key->ipv4.addr.dst));
 		memset(&upcall, 0, sizeof(upcall));
 		upcall.cmd = OVS_PACKET_CMD_MISS;
 		upcall.portid = ovs_vport_find_upcall_portid(p, skb);
@@ -263,6 +314,7 @@ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key)
 		goto out;
 	}
 
+	printk(KERN_INFO "XXXX hit src=%pI4, dst=%pI4\n", &(key->ipv4.addr.src), &(key->ipv4.addr.dst));
 	ovs_flow_stats_update(flow, key->tp.flags, skb);
 	sf_acts = rcu_dereference(flow->sf_acts);
 	error = ovs_execute_actions(dp, skb, sf_acts, key);
